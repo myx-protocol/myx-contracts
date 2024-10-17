@@ -64,7 +64,7 @@ contract ChainlinkPriceFeed is IChainlinkPriceFeed, Roleable {
         return PRICE_DECIMALS;
     }
 
-    function setTokenConfig(address[] memory assets, address[] memory feeds) external onlyTimelock {
+    function setTokenConfig(address[] memory assets, address[] memory feeds) external onlyPoolAdmin {
         _setAssetPrices(assets, feeds);
     }
 

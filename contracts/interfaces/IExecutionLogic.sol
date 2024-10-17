@@ -29,11 +29,7 @@ interface IExecutionLogic is IExecution {
         address referralOwner;
     }
 
-    function maxTimeDelay() external view returns (uint256);
-
     function updateExecutor(address _executor) external;
-
-    function updateMaxTimeDelay(uint256 newMaxTimeDelay) external;
 
     function executeIncreaseOrders(
         address keeper,

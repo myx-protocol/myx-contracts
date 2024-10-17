@@ -49,6 +49,8 @@ contract OrderManager is IOrderManager, Upgradeable {
     IPositionManager public positionManager;
     address public router;
 
+    mapping(uint256 => OrderTpSl) public ordersTpSl;
+
     function initialize(
         IAddressesProvider addressProvider,
         IPool _pool,
@@ -243,6 +245,111 @@ contract OrderManager is IOrderManager, Upgradeable {
         _cancelOrder(orderId, tradeType, isIncrease, reason);
     }
 
+    function addOrderTpSl(AddOrderTpSlRequest calldata request) public payable onlyRouter {
+        uint256 orderId = request.orderId;
+
+        (TradingTypes.IncreasePositionOrder memory order,) = getIncreaseOrder(orderId, request.tradeType);
+        address account = order.account;
+        uint256 orderSize = order.sizeAmount;
+        uint256 pairIndex = order.pairIndex;
+
+        address sender = abi.decode(request.data, (address));
+        require(sender == account, "not allowed");
+        ValidationHelper.validateAccountBlacklist(ADDRESS_PROVIDER, account);
+
+        require(orderSize >= request.tp && orderSize >= request.sl, "exceeds order size");
+
+        // network fees
+        uint256 count = 0;
+        if (request.tp > 0) count += 1;
+        if (request.sl > 0) count += 1;
+        IPool.Pair memory pair = pool.getPair(pairIndex);
+        if (request.paymentType == TradingTypes.InnerPaymentType.ETH) {
+            NetworkFee memory networkFee = networkFees[TradingTypes.NetworkFeePaymentType.ETH][pairIndex];
+
+            uint256 requiredDiscountedNetworkFee = networkFee.discountedNetworkFee * count;
+            uint256 requiredBasicNetworkFee = networkFee.basicNetworkFee * count;
+            if (networkFee.basicNetworkFee > 0) {
+                if ((orderSize >= networkFee.discountThreshold && msg.value < requiredDiscountedNetworkFee)
+                    || (orderSize < networkFee.discountThreshold && msg.value < requiredBasicNetworkFee)) {
+                    revert("insufficient network fee");
+                }
+                (bool success, ) = address(pool).call{value: msg.value}(new bytes(0));
+                require(success, "transfer eth failed");
+            }
+        } else if (request.paymentType == TradingTypes.InnerPaymentType.COLLATERAL) {
+            NetworkFee memory networkFee = networkFees[TradingTypes.NetworkFeePaymentType.COLLATERAL][pairIndex];
+            uint256 requiredDiscountedNetworkFee = networkFee.discountedNetworkFee * count;
+            uint256 requiredBasicNetworkFee = networkFee.basicNetworkFee * count;
+            if (networkFee.basicNetworkFee > 0) {
+                if ((orderSize >= networkFee.discountThreshold && request.networkFeeAmount < requiredDiscountedNetworkFee)
+                    || (orderSize < networkFee.discountThreshold && request.networkFeeAmount < requiredBasicNetworkFee)) {
+                    revert("insufficient network fee");
+                }
+                _transferOrderCollateral(
+                    pair.stableToken,
+                    request.networkFeeAmount,
+                    address(pool),
+                    request.data
+                );
+            }
+        }
+
+        OrderTpSl memory orderTpSl = OrderTpSl({
+            account: account,
+            orderId: orderId,
+            tpSize: request.tp,
+            tpPrice: request.tpPrice,
+            slSize: request.sl,
+            slPrice: request.slPrice
+        });
+        ordersTpSl[orderId] = orderTpSl;
+
+        emit SetOrderTpSl(account, orderId, pairIndex, request.tpPrice, request.slPrice, request.tp, request.sl);
+    }
+
+    function createOrderTpSl(uint256 orderId, TradingTypes.TradeType tradeType) external onlyExecutor {
+        (TradingTypes.IncreasePositionOrder memory order, TradingTypes.OrderNetworkFee memory orderNetworkFee) = getIncreaseOrder(orderId, tradeType);
+
+        OrderTpSl memory orderTpSl = ordersTpSl[order.orderId];
+        if (orderTpSl.tpSize > 0) {
+            _saveDecreaseOrder(
+                TradingTypes.DecreasePositionRequest({
+                    account: order.account,
+                    pairIndex: order.pairIndex,
+                    tradeType: TradingTypes.TradeType.TP,
+                    collateral: 0,
+                    triggerPrice: orderTpSl.tpPrice,
+                    sizeAmount: orderTpSl.tpSize,
+                    isLong: order.isLong,
+                    maxSlippage: 0,
+                    paymentType: TradingTypes.NetworkFeePaymentType.ETH,
+                    networkFeeAmount: orderNetworkFee.networkFeeAmount
+                }),
+                orderNetworkFee.paymentType
+            );
+        }
+        if (orderTpSl.slSize > 0) {
+            _saveDecreaseOrder(
+                TradingTypes.DecreasePositionRequest({
+                    account: order.account,
+                    pairIndex: order.pairIndex,
+                    tradeType: TradingTypes.TradeType.SL,
+                    collateral: 0,
+                    triggerPrice: orderTpSl.slPrice,
+                    sizeAmount: orderTpSl.slSize,
+                    isLong: order.isLong,
+                    maxSlippage: 0,
+                    paymentType: TradingTypes.NetworkFeePaymentType.ETH,
+                    networkFeeAmount: orderNetworkFee.networkFeeAmount
+                }),
+                orderNetworkFee.paymentType
+            );
+        }
+
+        delete ordersTpSl[order.orderId];
+    }
+
     function _cancelOrder(
         uint256 orderId,
         TradingTypes.TradeType tradeType,
@@ -255,14 +362,15 @@ contract OrderManager is IOrderManager, Upgradeable {
                 return;
             }
             _cancelIncreaseOrder(order);
+            emit CancelOrderV2(orderId, order.account, order.pairIndex, tradeType, reason);
         } else {
             (TradingTypes.DecreasePositionOrder memory order,) = getDecreaseOrder(orderId, tradeType);
             if (order.account == address(0)) {
                 return;
             }
             _cancelDecreaseOrder(order);
+            emit CancelOrderV2(orderId, order.account, order.pairIndex, tradeType, reason);
         }
-        emit CancelOrder(orderId, tradeType, reason);
     }
 
     function cancelAllPositionOrders(
@@ -527,6 +635,8 @@ contract OrderManager is IOrderManager, Upgradeable {
             delete increaseLimitOrders[order.orderId];
         }
 
+        delete ordersTpSl[order.orderId];
+
         emit CancelIncreaseOrder(order.account, order.orderId, order.tradeType);
     }
 
@@ -555,6 +665,8 @@ contract OrderManager is IOrderManager, Upgradeable {
         } else {
             delete decreaseLimitOrders[order.orderId];
         }
+
+        delete ordersTpSl[order.orderId];
 
         emit CancelDecreaseOrder(order.account, order.orderId, order.tradeType);
     }
@@ -640,5 +752,9 @@ contract OrderManager is IOrderManager, Upgradeable {
 
     function getPositionOrders(bytes32 key) public view override returns (PositionOrder[] memory) {
         return positionOrders[key];
+    }
+
+    function getOrderTpSl(uint256 orderId) public view override returns (OrderTpSl memory) {
+        return ordersTpSl[orderId];
     }
 }

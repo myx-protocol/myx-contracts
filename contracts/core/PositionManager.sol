@@ -129,6 +129,7 @@ contract PositionManager is IPositionManager, Upgradeable {
             keeper,
             orderId,
             sizeAmount,
+            true,
             isLong,
             tradingFeeTier,
             referralsRatio,
@@ -206,6 +207,7 @@ contract PositionManager is IPositionManager, Upgradeable {
             keeper,
             orderId,
             sizeAmount,
+            false,
             isLong,
             tradingFeeTier,
             referralsRatio,
@@ -338,6 +340,7 @@ contract PositionManager is IPositionManager, Upgradeable {
         address _keeper,
         uint256 _orderId,
         uint256 _sizeAmount,
+        bool _isIncrease,
         bool _isLong,
         IFeeCollector.TradingFeeTier memory tradingFeeTier,
         uint256 referralsRatio,
@@ -350,17 +353,32 @@ contract PositionManager is IPositionManager, Upgradeable {
             TokenHelper.convertIndexAmountToStableWithPrice(pair, int256(_sizeAmount), _price)
         );
 
-        bool isTaker;
-        (tradingFee, isTaker) = _tradingFee(_pairIndex, _isLong, sizeDeltaStable);
+        bool isMaker;
+        (tradingFee, isMaker) = _regularTradingFee(_pairIndex, _isLong, _isIncrease, sizeDeltaStable, _price);
         charge -= int256(tradingFee);
 
-        (uint256 lpAmount, uint256 vipDiscountAmount) = feeCollector.distributeTradingFee(
+        int256 exposureAmount = getExposedPositions(_pairIndex);
+
+        int256 afterExposureAmount;
+        if ((_isIncrease && _isLong) || (!_isIncrease && !_isLong)) {
+            afterExposureAmount = exposureAmount + _sizeAmount.safeConvertToInt256();
+        } else {
+            afterExposureAmount = exposureAmount - _sizeAmount.safeConvertToInt256();
+        }
+
+        (int256 lpAmount, int256 vipTradingFee, uint256 givebackFeeAmount) = feeCollector.distributeTradingFee(
             pair,
             _account,
+            _orderId,
             _keeper,
+            _sizeAmount,
             sizeDeltaStable,
+            _price,
             tradingFee,
-            isTaker ? tradingFeeTier.takerFee : tradingFeeTier.makerFee,
+            isMaker,
+            tradingFeeTier,
+            exposureAmount,
+            afterExposureAmount,
             referralsRatio,
             referralUserRatio,
             referralOwner
@@ -368,38 +386,17 @@ contract PositionManager is IPositionManager, Upgradeable {
 
         fundingFee = getFundingFee(_account, _pairIndex, _isLong);
         charge += fundingFee;
-        emit TakeFundingFeeAddTraderFee(
+        emit TakeFundingFeeAddTraderFeeV2(
             _account,
             _pairIndex,
             _orderId,
             sizeDeltaStable,
-            tradingFee,
             fundingFee,
-            lpAmount,
-            vipDiscountAmount
+            tradingFee,
+            vipTradingFee,
+            givebackFeeAmount,
+            lpAmount
         );
-    }
-
-    function _currentLpProfit(
-        uint256 _pairIndex,
-        bool lpIsLong,
-        uint amount,
-        uint256 _price
-    ) internal view returns (int256) {
-        IPool.Vault memory lpVault = pool.getVault(_pairIndex);
-        if (lpIsLong) {
-            if (_price > lpVault.averagePrice) {
-                return int256(amount.mulPrice(_price - lpVault.averagePrice));
-            } else {
-                return -int256(amount.mulPrice(lpVault.averagePrice - _price));
-            }
-        } else {
-            if (_price < lpVault.averagePrice) {
-                return int256(amount.mulPrice(lpVault.averagePrice - _price));
-            } else {
-                return -int256(amount.mulPrice(_price - lpVault.averagePrice));
-            }
-        }
     }
 
     function _settleLPPosition(
@@ -550,7 +547,7 @@ contract PositionManager is IPositionManager, Upgradeable {
         uint amount,
         uint256 price
     ) internal {
-        int256 profit = _currentLpProfit(pair.pairIndex, lpIsLong, amount, price);
+        int256 profit = pool.getLpPnl(pair.pairIndex, lpIsLong, amount, price);
         pool.setLPStableProfit(
             pair.pairIndex,
             TokenHelper.convertIndexAmountToStable(pair, profit)
@@ -574,26 +571,32 @@ contract PositionManager is IPositionManager, Upgradeable {
         }
     }
 
-    function _tradingFee(
-        uint256 _pairIndex,
-        bool _isLong,
-        uint256 sizeDeltaStable
-    ) internal view returns (uint256 tradingFee, bool isTaker) {
-        IFeeCollector.TradingFeeTier memory regularTradingFeeTier = feeCollector.getRegularTradingFeeTier(_pairIndex);
-        int256 currentExposureAmountChecker = getExposedPositions(_pairIndex);
+    function _regularTradingFee(
+        uint256 pairIndex,
+        bool isLong,
+        bool isIncrease,
+        uint256 sizeDeltaStable,
+        uint256 executionPrice
+    ) internal view returns (uint256 tradingFee, bool isMaker) {
+        IFeeCollector.TradingFeeTier memory regularFeeTier = feeCollector.getRegularTradingFeeTier(pairIndex);
 
-        if (currentExposureAmountChecker >= 0) {
-            tradingFee = _isLong
-                ? sizeDeltaStable.mulPercentage(regularTradingFeeTier.takerFee)
-                : sizeDeltaStable.mulPercentage(regularTradingFeeTier.makerFee);
-            isTaker = _isLong;
+        (,, int256 availableLiquidityBefore) = pool.getAvailableLiquidity(pairIndex, executionPrice);
+
+        int256 availableLiquidityAfter;
+        if ((isIncrease && isLong) || (!isIncrease && !isLong)) {
+            availableLiquidityAfter = availableLiquidityBefore - sizeDeltaStable.safeConvertToInt256();
         } else {
-            tradingFee = _isLong
-                ? sizeDeltaStable.mulPercentage(regularTradingFeeTier.makerFee)
-                : sizeDeltaStable.mulPercentage(regularTradingFeeTier.takerFee);
-            isTaker = !_isLong;
+            availableLiquidityAfter = availableLiquidityBefore + sizeDeltaStable.safeConvertToInt256();
         }
-        return (tradingFee, isTaker);
+
+        if ((availableLiquidityBefore > 0 && availableLiquidityBefore > availableLiquidityAfter && availableLiquidityAfter >= 0)
+            || (availableLiquidityBefore < 0 && availableLiquidityBefore < availableLiquidityAfter && availableLiquidityAfter <= 0)) {
+            isMaker = true;
+        }
+
+        uint256 rate = isMaker ? regularFeeTier.makerFee.abs() : regularFeeTier.takerFee;
+        tradingFee = sizeDeltaStable.mulPercentage(rate);
+        return (tradingFee, isMaker);
     }
 
     function _updateFundingRate(uint256 _pairIndex, uint256 _price) internal {
@@ -611,45 +614,38 @@ contract PositionManager is IPositionManager, Upgradeable {
         }
         int256 nextFundingRate = _nextFundingRate(_pairIndex, _price);
 
-        globalFundingFeeTracker[_pairIndex] =
-            globalFundingFeeTracker[_pairIndex] +
-            (nextFundingRate * int256(_price)) /
-            int256(PrecisionUtils.pricePrecision());
+        int256 tracker = (nextFundingRate * int256(_price)) / int256(PrecisionUtils.pricePrecision());
+        globalFundingFeeTracker[_pairIndex] += tracker;
         lastFundingRateUpdateTimes[_pairIndex] =
             (block.timestamp / fundingInterval) *
             fundingInterval;
         currentFundingRate[_pairIndex] = nextFundingRate;
 
-        IPool.Vault memory vault = pool.getVault(_pairIndex);
+        IPool.Pair memory pair = pool.getPair(_pairIndex);
 
-        // fund rate for settlement lp
-        if (longTracker[_pairIndex] > shortTracker[_pairIndex]) {
-            uint256 lpPosition = longTracker[_pairIndex] - shortTracker[_pairIndex];
-            int256 profit = (nextFundingRate * int256(lpPosition)) /
-                int256(PrecisionUtils.fundingRatePrecision());
-            uint256 priceChangePer = profit.abs().calculatePrice(lpPosition);
-            if (profit > 0) {
-                pool.updateAveragePrice(_pairIndex, vault.averagePrice + priceChangePer);
-            } else if (profit < 0) {
-                pool.updateAveragePrice(_pairIndex, vault.averagePrice - priceChangePer);
-            }
-        } else if (longTracker[_pairIndex] < shortTracker[_pairIndex]) {
-            uint256 lpPosition = shortTracker[_pairIndex] - longTracker[_pairIndex];
-            int256 profit = (-nextFundingRate * int256(lpPosition)) /
-                int256(PrecisionUtils.fundingRatePrecision());
-            uint256 priceChangePer = profit.abs().calculatePrice(lpPosition);
-            if (profit > 0) {
-                pool.updateAveragePrice(_pairIndex, vault.averagePrice - priceChangePer);
-            } else if (profit < 0) {
-                pool.updateAveragePrice(_pairIndex, vault.averagePrice + priceChangePer);
-            }
+        uint256 _longTracker = longTracker[_pairIndex];
+        uint256 _shortTracker = shortTracker[_pairIndex];
+        int256 fundingFee;
+        if (_longTracker > _shortTracker) {
+            fundingFee = TokenHelper.convertIndexAmountToStable(
+                pair,
+                (tracker * int256(_longTracker - _shortTracker)) / int256(PrecisionUtils.fundingRatePrecision())
+            );
+        } else if (_longTracker < _shortTracker) {
+            fundingFee = TokenHelper.convertIndexAmountToStable(
+                pair,
+                (-tracker * int256(_shortTracker - _longTracker)) / int256(PrecisionUtils.fundingRatePrecision())
+            );
         }
+        pool.setLPStableProfit(_pairIndex, fundingFee);
 
-        emit UpdateFundingRate(
+        emit UpdateFundingRateV2(
             _pairIndex,
             _price,
             nextFundingRate,
-            lastFundingRateUpdateTimes[_pairIndex]
+            lastFundingRateUpdateTimes[_pairIndex],
+            globalFundingFeeTracker[_pairIndex],
+            fundingFee
         );
     }
 
@@ -657,47 +653,17 @@ contract PositionManager is IPositionManager, Upgradeable {
         uint256 _pairIndex,
         uint256 _price
     ) internal view returns (int256 fundingRate) {
-        IPool.Vault memory vault = pool.getVault(_pairIndex);
-        IPool.Pair memory pair = pool.getPair(_pairIndex);
-
-        fundingRate = IFundingRate(ADDRESS_PROVIDER.fundingRate()).getFundingRate(
-            pair,
-            vault,
+        fundingRate = IFundingRate(ADDRESS_PROVIDER.fundingRate()).getFundingRateV2(
+            pool,
+            _pairIndex,
             _price
         );
-    }
-
-    function lpProfit(
-        uint pairIndex,
-        address token,
-        uint256 price
-    ) external view override returns (int256) {
-        if (token != pledgeAddress) {
-            return 0;
-        }
-        int256 currentExposureAmountChecker = getExposedPositions(pairIndex);
-        int256 profit;
-        if (currentExposureAmountChecker != 0) {
-            profit = _currentLpProfit(
-                pairIndex,
-                currentExposureAmountChecker < 0,
-                currentExposureAmountChecker.abs(),
-                price
-            );
-        }
-
-        IPool.Pair memory pair = pool.getPair(pairIndex);
-        return
-            TokenHelper.convertTokenAmountTo(
-                pair.indexToken,
-                profit,
-                IERC20Metadata(token).decimals()
-            );
     }
 
     function getTradingFee(
         uint256 _pairIndex,
         bool _isLong,
+        bool _isIncrease,
         uint256 _sizeAmount,
         uint256 price
     ) public view override returns (uint256 tradingFee) {
@@ -706,7 +672,7 @@ contract PositionManager is IPositionManager, Upgradeable {
             TokenHelper.convertIndexAmountToStableWithPrice(pair, int256(_sizeAmount), price)
         );
 
-        (tradingFee, ) = _tradingFee(_pairIndex, _isLong, sizeDeltaStable);
+        (tradingFee, ) = _regularTradingFee(_pairIndex, _isLong, _isIncrease, sizeDeltaStable, price);
         return tradingFee;
     }
 
@@ -812,6 +778,7 @@ contract PositionManager is IPositionManager, Upgradeable {
         uint256 tradingFee = getTradingFee(
             position.pairIndex,
             position.isLong,
+            false,
             position.positionAmount,
             price
         );

@@ -177,18 +177,25 @@ contract Router is
         );
 
         // tp、sl
-        _createTpSl(
-            request.account,
-            request.pairIndex,
-            request.isLong,
-            request.tpPrice,
-            request.tp,
-            request.slPrice,
-            request.sl,
-            request.paymentType,
-            request.tpNetworkFeeAmount,
-            request.slNetworkFeeAmount
-        );
+        if (request.tp > 0) {
+            require(request.isLong ? request.tpPrice > request.openPrice : request.tpPrice < request.openPrice, "invalid tp price");
+        }
+        if (request.sl > 0) {
+            require(request.isLong ? request.slPrice < request.openPrice : request.slPrice > request.openPrice, "invalid sl price");
+        }
+        IOrderManager.AddOrderTpSlRequest memory tpSlReq = IOrderManager.AddOrderTpSlRequest({
+            orderId: orderId,
+            tradeType: request.tradeType,
+            tp: request.tp,
+            tpPrice: request.tpPrice,
+            sl: request.sl,
+            slPrice: request.slPrice,
+            paymentType: TradingTypes.convertPaymentType(request.paymentType),
+            networkFeeAmount: request.tpNetworkFeeAmount + request.slNetworkFeeAmount,
+            data: abi.encode(request.account)
+        });
+        orderManager.addOrderTpSl{value: request.tpNetworkFeeAmount + request.slNetworkFeeAmount}(tpSlReq);
+
         return orderId;
     }
 
@@ -417,26 +424,15 @@ contract Router is
 
     function addOrderTpSl(
         AddOrderTpSlRequest memory request
-    ) external payable whenNotPaused nonReentrant returns (uint256 tpOrderId, uint256 slOrderId) {
-        uint256 pairIndex;
-        bool isLong;
-        if (request.isIncrease) {
-            (TradingTypes.IncreasePositionOrder memory order,) = orderManager.getIncreaseOrder(
-                request.orderId,
-                request.tradeType
-            );
-            require(order.account == msg.sender, "no access");
-            pairIndex = order.pairIndex;
-            isLong = order.isLong;
-        } else {
-            (TradingTypes.DecreasePositionOrder memory order,) = orderManager.getDecreaseOrder(
-                request.orderId,
-                request.tradeType
-            );
-            require(order.account == msg.sender, "no access");
-            pairIndex = order.pairIndex;
-            isLong = order.isLong;
-        }
+    ) external payable whenNotPaused nonReentrant {
+        (TradingTypes.IncreasePositionOrder memory order,) = orderManager.getIncreaseOrder(
+            request.orderId,
+            request.tradeType
+        );
+        require(order.account == msg.sender, "no access");
+        uint256 pairIndex = order.pairIndex;
+        bool isLong = order.isLong;
+
         require(!operationStatus[pairIndex].orderDisabled, "disabled");
 
         require(
@@ -447,20 +443,25 @@ contract Router is
         );
 
         if (request.tp > 0 || request.sl > 0) {
-            _createTpSl(
-                msg.sender,
-                pairIndex,
-                isLong,
-                request.tpPrice,
-                request.tp,
-                request.slPrice,
-                request.sl,
-                request.paymentType,
-                request.tpNetworkFeeAmount,
-                request.slNetworkFeeAmount
-            );
+            if (request.tp > 0) {
+                require(isLong ? request.tpPrice > order.openPrice : request.tpPrice < order.openPrice, "invalid tp price");
+            }
+            if (request.sl > 0) {
+                require(isLong ? request.slPrice < order.openPrice : request.slPrice > order.openPrice, "invalid sl price");
+            }
+            IOrderManager.AddOrderTpSlRequest memory tpSlReq = IOrderManager.AddOrderTpSlRequest({
+                orderId: request.orderId,
+                tradeType: request.tradeType,
+                tp: request.tp,
+                tpPrice: request.tpPrice,
+                sl: request.sl,
+                slPrice: request.slPrice,
+                paymentType: TradingTypes.convertPaymentType(request.paymentType),
+                networkFeeAmount: request.tpNetworkFeeAmount + request.slNetworkFeeAmount,
+                data:abi.encode(msg.sender)
+            });
+            orderManager.addOrderTpSl{value: request.tpNetworkFeeAmount + request.slNetworkFeeAmount}(tpSlReq);
         }
-        return (tpOrderId, slOrderId);
     }
 
     function createTpSl(

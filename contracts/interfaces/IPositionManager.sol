@@ -37,15 +37,25 @@ interface IPositionManager {
 
     event UpdateFundingRate(uint256 pairIndex, uint price, int256 fundingRate, uint256 lastFundingTime);
 
-    event TakeFundingFeeAddTraderFee(
+    event UpdateFundingRateV2(
+        uint256 pairIndex,
+        uint price,
+        int256 fundingRate,
+        uint256 lastFundingTime,
+        int256 globalFundingFeeTracker,
+        int256 lpFundingFee
+    );
+
+    event TakeFundingFeeAddTraderFeeV2(
         address account,
         uint256 pairIndex,
         uint256 orderId,
         uint256 sizeDelta,
-        uint256 tradingFee,
         int256 fundingFee,
-        uint256 lpTradingFee,
-        uint256 vipDiscountAmount
+        uint256 regularTradingFee,
+        int256 vipTradingFee,
+        uint256 returnAmount,
+        int256 lpTradingFee
     );
 
     event AdjustCollateral(
@@ -66,6 +76,7 @@ interface IPositionManager {
     function getTradingFee(
         uint256 _pairIndex,
         bool _isLong,
+        bool _isIncrease,
         uint256 _sizeAmount,
         uint256 price
     ) external view returns (uint256 tradingFee);
@@ -138,6 +149,4 @@ interface IPositionManager {
     function adjustCollateral(uint256 pairIndex, address account, bool isLong, int256 collateral) external;
 
     function updateFundingRate(uint256 _pairIndex) external;
-
-    function lpProfit(uint pairIndex, address token, uint256 price) external view returns (int256 profit);
 }

@@ -104,4 +104,17 @@ library TradingHelper {
         }
         return amount;
     }
+
+    function packFlags(
+        bool isIncrease,
+        bool isLong,
+        bool needADL,
+        bool closed
+    ) internal pure returns (uint256) {
+        return boolToUint(isIncrease) | (boolToUint(isLong) << 1) | (boolToUint(needADL) << 2) | (boolToUint(closed) << 3);
+    }
+
+    function boolToUint(bool flag) private pure returns (uint256) {
+        return flag ? 1 : 0;
+    }
 }

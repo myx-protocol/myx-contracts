@@ -31,7 +31,7 @@ interface IUiPoolDataProvider {
         uint256 priceSlipP;
         uint256 maxPriceDeviationP;
         uint256 takerFee;
-        uint256 makerFee;
+        int256 makerFee;
         uint256 lpFeeDistributeP;
         uint256 stakingFeeDistributeP;
         uint256 keeperFeeDistributeP;
@@ -47,6 +47,7 @@ interface IUiPoolDataProvider {
         uint256 nextFundingRateUpdateTime;
         uint256 lpPrice;
         uint256 lpTotalSupply;
+        uint256 maxRemoveLp;
         NetworkFeeData[] networkFees;
     }
 

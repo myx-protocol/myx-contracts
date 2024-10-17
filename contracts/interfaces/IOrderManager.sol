@@ -7,6 +7,14 @@ interface IOrderManager {
     event UpdatePositionManager(address oldAddress, address newAddress);
     event CancelOrder(uint256 orderId, TradingTypes.TradeType tradeType, string reason);
 
+    event CancelOrderV2(
+        uint256 orderId,
+        address account,
+        uint256 pairIndex,
+        TradingTypes.TradeType tradeType,
+        string reason
+    );
+
     event CreateIncreaseOrder(
         address account,
         uint256 orderId,
@@ -48,6 +56,28 @@ interface IOrderManager {
         uint256 discountedNetworkFee
     );
 
+    event SetOrderTpSl(
+        address account,
+        uint256 orderId,
+        uint256 pairId,
+        uint256 tpPrice,
+        uint256 slPrice,
+        uint128 tpSize,
+        uint128 slSize
+    );
+
+    struct AddOrderTpSlRequest {
+        uint256 orderId;
+        TradingTypes.TradeType tradeType;
+        uint256 tpPrice;
+        uint128 tp;
+        uint256 slPrice;
+        uint128 sl;
+        TradingTypes.InnerPaymentType paymentType;
+        uint256 networkFeeAmount;
+        bytes data;
+    }
+
     struct PositionOrder {
         address account;
         uint256 pairIndex;
@@ -56,6 +86,15 @@ interface IOrderManager {
         TradingTypes.TradeType tradeType;
         uint256 orderId;
         uint256 sizeAmount;
+    }
+
+    struct OrderTpSl {
+        address account;
+        uint256 orderId;
+        uint256 tpSize;
+        uint256 tpPrice;
+        uint256 slSize;
+        uint256 slPrice;
     }
 
     struct NetworkFee {
@@ -68,6 +107,8 @@ interface IOrderManager {
 
     function getPositionOrders(bytes32 key) external view returns (PositionOrder[] memory);
 
+    function getOrderTpSl(uint256 orderId) external view returns (OrderTpSl memory);
+
     function getNetworkFee(TradingTypes.NetworkFeePaymentType paymentType, uint256 pairIndex) external view returns (NetworkFee memory);
 
     function createOrder(TradingTypes.CreateOrderRequest memory request) external payable returns (uint256 orderId);
@@ -78,6 +119,10 @@ interface IOrderManager {
         bool isIncrease,
         string memory reason
     ) external;
+
+    function addOrderTpSl(AddOrderTpSlRequest calldata request) external payable;
+
+    function createOrderTpSl(uint256 orderId, TradingTypes.TradeType tradeType) external;
 
     function cancelAllPositionOrders(address account, uint256 pairIndex, bool isLong) external;
 

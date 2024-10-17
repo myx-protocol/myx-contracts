@@ -8,8 +8,10 @@ import "../interfaces/IPositionManager.sol";
 import "../interfaces/IPoolView.sol";
 import "../interfaces/IRouter.sol";
 import "../interfaces/IOrderManager.sol";
+import "../libraries/PrecisionUtils.sol";
 
 contract UiPoolDataProvider is IUiPoolDataProvider {
+    using PrecisionUtils for uint256;
 
     IAddressesProvider public immutable ADDRESS_PROVIDER;
 
@@ -90,6 +92,13 @@ contract UiPoolDataProvider is IUiPoolDataProvider {
 
             pairData.lpPrice = poolView.lpFairPrice(pairIndex, price);
             pairData.lpTotalSupply = IERC20(pair.pairToken).totalSupply();
+
+            if (pairData.lpPrice > 0) {
+                uint256 indexAvailable = vault.indexTotalAmount - vault.indexReservedAmount;
+                uint256 stableAvailable = vault.stableTotalAmount - vault.stableReservedAmount;
+                uint256 maxRemoveLpWithStable = (uint256(TokenHelper.convertIndexAmountToStableWithPrice(pair, int256(indexAvailable), price)) + stableAvailable).divPrice(pairData.lpPrice);
+                pairData.maxRemoveLp = uint256(TokenHelper.convertTokenAmountTo(pair.stableToken, int256(maxRemoveLpWithStable), 18));
+            }
 
             pairData.networkFees = new NetworkFeeData[](2);
             NetworkFeeData memory networkFeeDataETH = pairData.networkFees[0];

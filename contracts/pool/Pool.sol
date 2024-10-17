@@ -97,6 +97,11 @@ contract Pool is IPool, Upgradeable {
         _;
     }
 
+    modifier onlyFeeCollector() {
+        require(msg.sender == feeCollector, "only fc");
+        _;
+    }
+
     modifier onlyTreasury() {
         require(
             IRoleManager(ADDRESS_PROVIDER.roleManager()).isTreasurer(msg.sender),
@@ -308,15 +313,16 @@ contract Pool is IPool, Upgradeable {
         uint256 _stableAmount
     ) external onlyPositionManager {
         Vault storage vault = vaults[_pairIndex];
-        require(vault.indexReservedAmount >= _indexAmount, "ex");
-        require(vault.stableReservedAmount >= _stableAmount, "ex");
 
-        vault.indexReservedAmount = vault.indexReservedAmount - _indexAmount;
-        vault.stableReservedAmount = vault.stableReservedAmount - _stableAmount;
+        uint256 decreaseIndex = Math.min(vault.indexReservedAmount, _indexAmount);
+        uint256 decreaseStable = Math.min(vault.stableReservedAmount, _stableAmount);
+
+        vault.indexReservedAmount -= decreaseIndex;
+        vault.stableReservedAmount -= decreaseStable;
         emit UpdateReserveAmount(
             _pairIndex,
-            -int256(_indexAmount),
-            -int256(_stableAmount),
+            -int256(decreaseIndex),
+            -int256(decreaseStable),
             vault.indexReservedAmount,
             vault.stableReservedAmount
         );
@@ -346,6 +352,34 @@ contract Pool is IPool, Upgradeable {
         }
 
         emit UpdateLPProfit(_pairIndex, pair.stableToken, _profit, vault.stableTotalAmount);
+    }
+
+    function givebackTradingFee(
+        uint256 pairIndex,
+        uint256 amount
+    ) external onlyFeeCollector {
+        Vault storage vault = vaults[pairIndex];
+        require(vault.stableTotalAmount >= amount, "insufficient liquidity");
+
+        vault.stableTotalAmount -= amount;
+
+        Pair memory pair = pairs[pairIndex];
+        emit GivebackTradingFee(pairIndex, pair.stableToken, amount);
+    }
+
+    function getAvailableLiquidity(uint256 pairIndex, uint256 price) external view returns(int256 v, int256 u, int256 e) {
+        Vault memory vault = getVault(pairIndex);
+        Pair memory pair = getPair(pairIndex);
+
+        int256 exposedPositions = IPositionManager(positionManager).getExposedPositions(pairIndex);
+
+        uint256 availableIndex = vault.indexTotalAmount > vault.indexReservedAmount ? vault.indexTotalAmount - vault.indexReservedAmount : 0;
+        v = TokenHelper.convertIndexAmountToStableWithPrice(pair, int256(availableIndex) - SignedMath.min(0, exposedPositions), price);
+
+        uint256 availableStable = vault.stableTotalAmount > vault.stableReservedAmount ? vault.stableTotalAmount - vault.stableReservedAmount : 0;
+        u = int256(availableStable)
+            + TokenHelper.convertIndexAmountToStableWithPrice(pair, SignedMath.max(0, exposedPositions), price);
+        e = v - u;
     }
 
     function addLiquidity(
@@ -439,7 +473,7 @@ contract Pool is IPool, Upgradeable {
         IPool.Vault memory vault,
         uint256 price
     ) internal view returns (uint256) {
-        int256 profit = getProfit(pair.pairIndex, pair.stableToken, price);
+        int256 profit = lpProfit(pair.pairIndex, pair.stableToken, price);
         if (profit < 0) {
             return vault.stableTotalAmount > profit.abs() ? vault.stableTotalAmount.sub(profit.abs()) : 0;
         } else {
@@ -452,7 +486,7 @@ contract Pool is IPool, Upgradeable {
         IPool.Vault memory vault,
         uint256 price
     ) internal view returns (uint256) {
-        int256 profit = getProfit(pair.pairIndex, pair.indexToken, price);
+        int256 profit = lpProfit(pair.pairIndex, pair.indexToken, price);
         if (profit < 0) {
             return vault.indexTotalAmount > profit.abs() ? vault.indexTotalAmount.sub(profit.abs()) : 0;
         } else {
@@ -649,8 +683,52 @@ contract Pool is IPool, Upgradeable {
         IERC20(token).safeTransfer(to, amount);
     }
 
-    function getProfit(uint pairIndex, address token, uint256 price) private view returns (int256 profit) {
-        return IPositionManager(positionManager).lpProfit(pairIndex, token, price);
+    function getLpPnl(
+        uint256 _pairIndex,
+        bool lpIsLong,
+        uint amount,
+        uint256 _price
+    ) public view override returns (int256) {
+        Vault memory lpVault = getVault(_pairIndex);
+        if (lpIsLong) {
+            if (_price > lpVault.averagePrice) {
+                return int256(amount.mulPrice(_price - lpVault.averagePrice));
+            } else {
+                return -int256(amount.mulPrice(lpVault.averagePrice - _price));
+            }
+        } else {
+            if (_price < lpVault.averagePrice) {
+                return int256(amount.mulPrice(lpVault.averagePrice - _price));
+            } else {
+                return -int256(amount.mulPrice(_price - lpVault.averagePrice));
+            }
+        }
+    }
+
+    function lpProfit(
+        uint pairIndex,
+        address token,
+        uint256 price
+    ) public view override returns (int256) {
+        int256 currentExposureAmountChecker = IPositionManager(positionManager).getExposedPositions(pairIndex);
+        if (currentExposureAmountChecker == 0) {
+            return 0;
+        }
+
+        int256 profit = getLpPnl(
+            pairIndex,
+            currentExposureAmountChecker < 0,
+            currentExposureAmountChecker.abs(),
+            price
+        );
+
+        Pair memory pair = getPair(pairIndex);
+        return
+            TokenHelper.convertTokenAmountTo(
+            pair.indexToken,
+            profit,
+            IERC20Metadata(token).decimals()
+        );
     }
 
     function getVault(uint256 _pairIndex) public view returns (Vault memory vault) {

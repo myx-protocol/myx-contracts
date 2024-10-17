@@ -81,9 +81,9 @@ contract PoolView is IPoolView, Upgradeable {
         uint256 stableTokenDec = IERC20Metadata(pair.stableToken).decimals();
 
         uint256 indexTotalDeltaWad = uint256(TokenHelper.convertTokenAmountWithPrice(
-            pair.indexToken, int256(_getIndexTotalAmount(pair, vault, price)), 18, price));
+            pair.indexToken, int256(vault.indexTotalAmount), 18, price));
         uint256 stableTotalDeltaWad = uint256(TokenHelper.convertTokenAmountTo(
-            pair.stableToken, int256(_getStableTotalAmount(pair, vault, price)), 18));
+            pair.stableToken, int256(vault.stableTotalAmount), 18));
 
         uint256 indexDepositDeltaWad = uint256(TokenHelper.convertTokenAmountWithPrice(
             pair.indexToken, int256(afterFeeIndexAmount), 18, price));
@@ -188,23 +188,29 @@ contract PoolView is IPoolView, Upgradeable {
 
     function lpFairPrice(uint256 _pairIndex, uint256 price) public view returns (uint256) {
         IPool.Pair memory pair = pool.getPair(_pairIndex);
+
+        uint256 lpSupply = IERC20(pair.pairToken).totalSupply();
+        if (lpSupply == 0) {
+            return 1 * AmountMath.PRICE_PRECISION;
+        }
+
         IPool.Vault memory vault = pool.getVault(_pairIndex);
         uint256 indexTokenDec = IERC20Metadata(pair.indexToken).decimals();
         uint256 stableTokenDec = IERC20Metadata(pair.stableToken).decimals();
 
-        uint256 indexTotalAmountWad = _getIndexTotalAmount(pair, vault, price) * (10 ** (18 - indexTokenDec));
-        uint256 stableTotalAmountWad = _getStableTotalAmount(pair, vault, price) * (10 ** (18 - stableTokenDec));
+        uint256 indexTotalAmountWad = vault.indexTotalAmount * (10 ** (18 - indexTokenDec));
+        uint256 stableTotalAmountWad = vault.stableTotalAmount * (10 ** (18 - stableTokenDec));
+        int256 lpProfitWad = pool.lpProfit(pair.pairIndex, pair.stableToken, price) * int256(10 ** (18 - stableTokenDec));
 
-        uint256 lpFairDelta = AmountMath.getStableDelta(indexTotalAmountWad, price) + stableTotalAmountWad;
+        uint256 vaultDelta = AmountMath.getStableDelta(indexTotalAmountWad, price) + stableTotalAmountWad;
 
-        return
-            lpFairDelta > 0 && IERC20(pair.pairToken).totalSupply() > 0
-                ? Math.mulDiv(
-                    lpFairDelta,
-                    AmountMath.PRICE_PRECISION,
-                    IERC20(pair.pairToken).totalSupply()
-                )
-                : 1 * AmountMath.PRICE_PRECISION;
+        // When the losses of the liquidity provider (LP) are greater than or equal to the LP's assets, the price of the LP is zero.
+        if (lpProfitWad < 0 && vaultDelta <= lpProfitWad.abs()) {
+            return 0;
+        }
+
+        uint256 lpFairDelta = lpProfitWad > 0 ? vaultDelta + lpProfitWad.abs() : vaultDelta - lpProfitWad.abs();
+        return Math.mulDiv(lpFairDelta, AmountMath.PRICE_PRECISION, lpSupply);
     }
 
     function getDepositAmount(
@@ -402,31 +408,5 @@ contract PoolView is IPoolView, Upgradeable {
             amount = expectDelta.sub(delta);
         }
         return (rate, amount);
-    }
-
-    function _getStableTotalAmount(
-        IPool.Pair memory pair,
-        IPool.Vault memory vault,
-        uint256 price
-    ) internal view returns (uint256) {
-        int256 profit = positionManager.lpProfit(pair.pairIndex, pair.stableToken, price);
-        if (profit < 0) {
-            return vault.stableTotalAmount > profit.abs() ? vault.stableTotalAmount.sub(profit.abs()) : 0;
-        } else {
-            return vault.stableTotalAmount.add(profit.abs());
-        }
-    }
-
-    function _getIndexTotalAmount(
-        IPool.Pair memory pair,
-        IPool.Vault memory vault,
-        uint256 price
-    ) internal view returns (uint256) {
-        int256 profit = positionManager.lpProfit(pair.pairIndex, pair.indexToken, price);
-        if (profit < 0) {
-            return vault.indexTotalAmount > profit.abs() ? vault.indexTotalAmount.sub(profit.abs()) : 0;
-        } else {
-            return vault.indexTotalAmount.add(profit.abs());
-        }
     }
 }

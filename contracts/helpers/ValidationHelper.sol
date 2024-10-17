@@ -23,15 +23,20 @@ library ValidationHelper {
     function validatePriceTriggered(
         IPool.TradingConfig memory tradingConfig,
         TradingTypes.TradeType tradeType,
+        bool isIncrease,
+        bool isLong,
         bool isAbove,
         uint256 currentPrice,
         uint256 orderPrice,
         uint256 maxSlippage
     ) internal pure {
         if (tradeType == TradingTypes.TradeType.MARKET) {
-            bool valid = currentPrice >=
-                orderPrice.mulPercentage(PrecisionUtils.percentage() - maxSlippage) &&
-                currentPrice <= orderPrice.mulPercentage(PrecisionUtils.percentage() + maxSlippage);
+            bool valid;
+            if ((isIncrease && isLong) || (!isIncrease && !isLong)) {
+                valid = currentPrice <= orderPrice.mulPercentage(PrecisionUtils.percentage() + maxSlippage);
+            } else {
+                valid = currentPrice >= orderPrice.mulPercentage(PrecisionUtils.percentage() - maxSlippage);
+            }
             require(maxSlippage == 0 || valid, "exceeds max slippage");
         } else if (tradeType == TradingTypes.TradeType.LIMIT) {
             require(

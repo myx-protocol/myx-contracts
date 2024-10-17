@@ -34,6 +34,11 @@ contract PositionCaller {
         TradingTypes.InnerPaymentType paymentType;
     }
 
+    struct TradingFeeTierParam{
+        uint256 pairIndex;
+        uint8 tier;
+    }
+
     constructor( address _positionManager, address _feeCollector ){
         setAddress(POSITION_MANAGER, _positionManager);
         setAddress(FEE_COLLECTOR, _feeCollector);
@@ -65,7 +70,7 @@ contract PositionCaller {
         uint256[] memory tradingFees = new uint256[](params.length);
         for (uint256 i = 0; i < params.length; i++) {
             TradingFeeParam memory tradingFeeParam = params[i];
-            uint256 fundingFee = IPositionManager(getAddress(POSITION_MANAGER)).getTradingFee(tradingFeeParam.pairIndex, tradingFeeParam.isLong, tradingFeeParam.sizeAmount, tradingFeeParam.price);
+            uint256 fundingFee = IPositionManager(getAddress(POSITION_MANAGER)).getTradingFee(tradingFeeParam.pairIndex, tradingFeeParam.isLong, false, tradingFeeParam.sizeAmount, tradingFeeParam.price);
             tradingFees[i] = fundingFee;
         }
         return tradingFees;
@@ -103,5 +108,29 @@ contract PositionCaller {
             networkFees[i] = networkFee;
         }
         return networkFees;
+    }
+
+    function batchErcBalance(
+        address tokenAddress,
+        address[] memory accounts
+    ) public view returns (uint256[] memory)  {
+        uint256[] memory balances = new uint256[](accounts.length);
+        for (uint256 i = 0; i < accounts.length; i++) {
+            uint256 balance = IERC20(tokenAddress).balanceOf(accounts[i]);
+            balances[i] = balance;
+        }
+        return balances;
+    }
+
+    function getTradingFeeTiers(
+        TradingFeeTierParam[] memory params
+    ) public view returns (IFeeCollector.TradingFeeTier[] memory) {
+        IFeeCollector.TradingFeeTier[] memory tradingFeeTiers = new IFeeCollector.TradingFeeTier[](params.length);
+        for (uint256 i = 0; i < params.length; i++) {
+            TradingFeeTierParam memory tradingFeeTierParam = params[i];
+            IFeeCollector.TradingFeeTier memory tradingFeeTier = IFeeCollector(getAddress(FEE_COLLECTOR)).getTradingFeeTier(tradingFeeTierParam.pairIndex, tradingFeeTierParam.tier);
+            tradingFeeTiers[i] = tradingFeeTier;
+        }
+        return tradingFeeTiers;
     }
 }

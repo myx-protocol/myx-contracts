@@ -33,6 +33,12 @@ interface IPool {
         uint256 totalAmount
     );
 
+    event GivebackTradingFee(
+        uint256 indexed pairIndex,
+        address token,
+        uint256 amount
+    );
+
     event UpdateAveragePrice(uint256 indexed pairIndex, uint256 averagePrice);
 
     event UpdateSpotSwap(address sender, address oldAddress, address newAddress);
@@ -143,6 +149,19 @@ interface IPool {
         uint256 amount
     ) external;
 
+    function getLpPnl(
+        uint256 _pairIndex,
+        bool lpIsLong,
+        uint amount,
+        uint256 _price
+    ) external view returns (int256);
+
+    function lpProfit(
+        uint pairIndex,
+        address token,
+        uint256 price
+    ) external view returns (int256);
+
     function increaseReserveAmount(
         uint256 _pairToken,
         uint256 _indexAmount,
@@ -158,6 +177,13 @@ interface IPool {
     function updateAveragePrice(uint256 _pairIndex, uint256 _averagePrice) external;
 
     function setLPStableProfit(uint256 _pairIndex, int256 _profit) external;
+
+    function givebackTradingFee(
+        uint256 pairIndex,
+        uint256 amount
+    ) external;
+
+    function getAvailableLiquidity(uint256 pairIndex, uint256 price) external view returns(int256 v, int256 u, int256 e);
 
     function addLiquidity(
         address recipient,

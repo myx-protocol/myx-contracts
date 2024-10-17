@@ -162,24 +162,23 @@ contract LiquidationLogic is ILiquidationLogic {
         if (needADL) {
             orderManager.setOrderNeedADL(orderId, order.tradeType, needADL);
 
-            emit ExecuteDecreaseOrder(
+            emit ExecuteOrderV2(
                 order.account,
                 orderId,
                 pairIndex,
                 order.tradeType,
-                order.isLong,
                 order.collateral,
                 order.sizeAmount,
                 order.triggerPrice,
                 executionSize,
                 executionPrice,
                 order.executedSize,
-                needADL,
                 0,
                 0,
                 0,
                 TradingTypes.InnerPaymentType.NONE,
-                0
+                0,
+                TradingHelper.packFlags(false, order.isLong, needADL, false)
             );
             return;
         }
@@ -206,24 +205,23 @@ contract LiquidationLogic is ILiquidationLogic {
         // remove order
         orderManager.removeDecreaseMarketOrders(orderId);
 
-        emit ExecuteDecreaseOrder(
+        emit ExecuteOrderV2(
             order.account,
             orderId,
             pairIndex,
             order.tradeType,
-            order.isLong,
             0,
             order.sizeAmount,
             order.triggerPrice,
             executionSize,
             executionPrice,
             order.executedSize,
-            needADL,
             pnl,
             tradingFee,
             fundingFee,
             orderNetworkFee.paymentType,
-            orderNetworkFee.networkFeeAmount
+            orderNetworkFee.networkFeeAmount,
+            TradingHelper.packFlags(false, order.isLong, needADL, true)
         );
     }
 

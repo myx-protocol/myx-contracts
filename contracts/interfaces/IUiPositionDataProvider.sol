@@ -22,4 +22,27 @@ interface IUiPositionDataProvider {
         uint256 shortLiquidity;
     }
 
+    struct UserPositionData {
+        address account;
+        uint256 pairIndex;
+        bool isLong;
+        uint256 collateral;
+        uint256 positionAmount;
+        uint256 averagePrice;
+        int256 fundingFeeTracker;
+    }
+
+    struct UserPositionDataV2 {
+        bytes32 key;
+        address account;
+        uint256 pairIndex;
+        bool isLong;
+        uint256 collateral;
+        uint256 positionAmount;
+        uint256 averagePrice;
+        int256 fundingFeeTracker;
+        uint256 positionCloseTradingFee;
+        int256 positionFundingFee;
+    }
+
 }

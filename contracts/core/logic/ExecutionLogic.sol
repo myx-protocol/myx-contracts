@@ -20,7 +20,7 @@ contract ExecutionLogic is IExecutionLogic {
     using Int256Utils for uint256;
     using Position for Position.Info;
 
-    uint256 public override maxTimeDelay;
+    uint256 public constant maxTimeDelay = 600;
 
     IAddressesProvider public immutable ADDRESS_PROVIDER;
 
@@ -36,15 +36,13 @@ contract ExecutionLogic is IExecutionLogic {
         IPool _pool,
         IOrderManager _orderManager,
         IPositionManager _positionManager,
-        IFeeCollector _feeCollector,
-        uint256 _maxTimeDelay
+        IFeeCollector _feeCollector
     ) {
         ADDRESS_PROVIDER = addressProvider;
         pool = _pool;
         orderManager = _orderManager;
         positionManager = _positionManager;
         feeCollector = _feeCollector;
-        maxTimeDelay = _maxTimeDelay;
     }
 
     modifier onlyPoolAdmin() {
@@ -61,12 +59,6 @@ contract ExecutionLogic is IExecutionLogic {
         address oldAddress = executor;
         executor = _executor;
         emit UpdateExecutorAddress(msg.sender, oldAddress, _executor);
-    }
-
-    function updateMaxTimeDelay(uint256 newMaxTimeDelay) external override onlyPoolAdmin {
-        uint256 oldDelay = maxTimeDelay;
-        maxTimeDelay = newMaxTimeDelay;
-        emit UpdateMaxTimeDelay(oldDelay, newMaxTimeDelay);
     }
 
     function executeIncreaseOrders(
@@ -89,12 +81,14 @@ contract ExecutionLogic is IExecutionLogic {
                 )
             {} catch Error(string memory reason) {
                 emit ExecuteOrderError(order.orderId, reason);
-                orderManager.cancelOrder(
-                    order.orderId,
-                    tradeType,
-                    true,
-                    reason
-                );
+                if (tradeType == TradingTypes.TradeType.MARKET) {
+                    orderManager.cancelOrder(
+                        order.orderId,
+                        tradeType,
+                        true,
+                        reason
+                    );
+                }
             }
         }
     }
@@ -118,14 +112,14 @@ contract ExecutionLogic is IExecutionLogic {
 
         // is expired
         if (order.tradeType == TradingTypes.TradeType.MARKET) {
-            require(order.blockTime + maxTimeDelay >= block.timestamp, "order expired");
+            require(order.blockTime + maxTimeDelay >= block.timestamp, "expired");
         }
 
         // check pair enable
         uint256 pairIndex = order.pairIndex;
         IPool.Pair memory pair = pool.getPair(pairIndex);
         if (!pair.enable) {
-            orderManager.cancelOrder(order.orderId, order.tradeType, true, "!enable");
+            orderManager.cancelOrder(order.orderId, order.tradeType, true, "disabled");
             return;
         }
 
@@ -143,6 +137,8 @@ contract ExecutionLogic is IExecutionLogic {
         ValidationHelper.validatePriceTriggered(
             tradingConfig,
             order.tradeType,
+            true,
+            order.isLong,
             isAbove,
             executionPrice,
             order.openPrice,
@@ -231,11 +227,12 @@ contract ExecutionLogic is IExecutionLogic {
         order.executedSize += executionSize;
         orderManager.increaseOrderExecutedSize(order.orderId, order.tradeType, true, executionSize);
 
+        orderManager.createOrderTpSl(_orderId, order.tradeType);
+
+        bool closeOrder = order.tradeType == TradingTypes.TradeType.MARKET || order.executedSize >= order.sizeAmount;
+
         // remove order
-        if (
-            order.tradeType == TradingTypes.TradeType.MARKET ||
-            order.executedSize >= order.sizeAmount
-        ) {
+        if (closeOrder) {
             orderManager.removeOrderFromPosition(
                 IOrderManager.PositionOrder(
                     order.account,
@@ -258,22 +255,23 @@ contract ExecutionLogic is IExecutionLogic {
             feeCollector.distributeNetworkFee(keeper, orderNetworkFee.paymentType, orderNetworkFee.networkFeeAmount);
         }
 
-        emit ExecuteIncreaseOrder(
+        emit ExecuteOrderV2(
             order.account,
             order.orderId,
             order.pairIndex,
             order.tradeType,
-            order.isLong,
             collateral,
             order.sizeAmount,
             order.openPrice,
             executionSize,
             executionPrice,
             order.executedSize,
+            0,
             tradingFee,
             fundingFee,
             orderNetworkFee.paymentType,
-            orderNetworkFee.networkFeeAmount
+            orderNetworkFee.networkFeeAmount,
+            TradingHelper.packFlags(true, order.isLong, false, closeOrder)
         );
     }
 
@@ -299,12 +297,14 @@ contract ExecutionLogic is IExecutionLogic {
                 )
             {} catch Error(string memory reason) {
                 emit ExecuteOrderError(order.orderId, reason);
-                orderManager.cancelOrder(
-                    order.orderId,
-                    tradeType,
-                    false,
-                    reason
-                );
+                if (tradeType == TradingTypes.TradeType.MARKET) {
+                    orderManager.cancelOrder(
+                        order.orderId,
+                        tradeType,
+                        false,
+                        reason
+                    );
+                }
             }
         }
     }
@@ -331,14 +331,14 @@ contract ExecutionLogic is IExecutionLogic {
 
         // is expired
         if (order.tradeType == TradingTypes.TradeType.MARKET) {
-            require(order.blockTime + maxTimeDelay >= block.timestamp, "order expired");
+            require(order.blockTime + maxTimeDelay >= block.timestamp, "expired");
         }
 
         // check pair enable
         uint256 pairIndex = order.pairIndex;
         IPool.Pair memory pair = pool.getPair(pairIndex);
         if (!pair.enable) {
-            orderManager.cancelOrder(order.orderId, order.tradeType, false, "!enable");
+            orderManager.cancelOrder(order.orderId, order.tradeType, false, "disabled");
             return;
         }
 
@@ -374,6 +374,8 @@ contract ExecutionLogic is IExecutionLogic {
         ValidationHelper.validatePriceTriggered(
             tradingConfig,
             order.tradeType,
+            false,
+            order.isLong,
             order.abovePrice,
             executionPrice,
             order.triggerPrice,
@@ -414,25 +416,25 @@ contract ExecutionLogic is IExecutionLogic {
         if (_needADL) {
             orderManager.setOrderNeedADL(_orderId, order.tradeType, _needADL);
 
-            emit ExecuteDecreaseOrder(
+            emit ExecuteOrderV2(
                 order.account,
                 _orderId,
                 pairIndex,
                 order.tradeType,
-                order.isLong,
                 order.collateral,
                 order.sizeAmount,
                 order.triggerPrice,
                 executionSize,
                 executionPrice,
                 order.executedSize,
-                _needADL,
                 0,
                 0,
                 0,
                 TradingTypes.InnerPaymentType.NONE,
-                0
+                0,
+                TradingHelper.packFlags(false, order.isLong, _needADL, false)
             );
+
             return;
         }
 
@@ -471,8 +473,29 @@ contract ExecutionLogic is IExecutionLogic {
         );
 
         position = positionManager.getPosition(order.account, order.pairIndex, order.isLong);
+        bool closeOrder = onlyOnce || order.executedSize >= order.sizeAmount || position.positionAmount == 0;
+
+        emit ExecuteOrderV2(
+            order.account,
+            _orderId,
+            pairIndex,
+            order.tradeType,
+            collateral,
+            order.sizeAmount,
+            order.triggerPrice,
+            executionSize,
+            executionPrice,
+            order.executedSize,
+            pnl,
+            tradingFee,
+            fundingFee,
+            orderNetworkFee.paymentType,
+            orderNetworkFee.networkFeeAmount,
+            TradingHelper.packFlags(false, order.isLong, _needADL, closeOrder)
+        );
+
         // remove order
-        if (onlyOnce || order.executedSize >= order.sizeAmount || position.positionAmount == 0) {
+        if (closeOrder) {
             // remove decrease order
             orderManager.removeOrderFromPosition(
                 IOrderManager.PositionOrder(
@@ -514,26 +537,6 @@ contract ExecutionLogic is IExecutionLogic {
                 );
             }
         }
-
-        emit ExecuteDecreaseOrder(
-            order.account,
-            _orderId,
-            pairIndex,
-            order.tradeType,
-            order.isLong,
-            collateral,
-            order.sizeAmount,
-            order.triggerPrice,
-            executionSize,
-            executionPrice,
-            order.executedSize,
-            _needADL,
-            pnl,
-            tradingFee,
-            fundingFee,
-            orderNetworkFee.paymentType,
-            orderNetworkFee.networkFeeAmount
-        );
     }
 
     function executeADLAndDecreaseOrders(
